@@ -1,0 +1,12 @@
+schemaVersion: "1.2"
+endpoints:
+    - name: portfolio-allocation-api-v2
+      displayName: Portfolio Allocation API V2
+      service:
+        basePath: /
+        port: 9090
+      type: GraphQL
+      networkVisibilities:
+        - Public
+        - Project
+        - Organization
