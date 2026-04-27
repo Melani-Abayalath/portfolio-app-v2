@@ -1,0 +1,8 @@
+[package]
+org = "perf_test"
+name = "portfolio_allocation_api_v2"
+version = "1.0.0"
+distribution = "2201.12.2"
+
+[build-options]
+observabilityIncluded = true
