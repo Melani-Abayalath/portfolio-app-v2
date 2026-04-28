@@ -7,7 +7,6 @@ import ballerina/time;
 import ballerina/uuid;
 
 // ── Header extraction helpers ─────────────────────────────────────────────
-// Identical to portfolio-app utils.bal
 isolated function extractRequestIdOrGenerate(string|http:HeaderNotFoundError header) returns string =>
     header is string && header != "" ? header : uuid:createType4AsString();
 
@@ -24,37 +23,31 @@ isolated function getStringContextValue(graphql:Context ctx, string key) returns
 }
 
 // ── constructLoggingContext ───────────────────────────────────────────────
-// Identical to both old and new account-data-api utils.bal line 550
 isolated function constructLoggingContext(graphql:Context ctx) returns LoggingContext|error => {
     correlationId: check getStringContextValue(ctx, CORRELATION_ID),
     requestId:     check getStringContextValue(ctx, REQUEST_ID),
     'client:       check getStringContextValue(ctx, CLIENT)
 };
 
-// ── Elapsed time helper ───────────────────────────────────────────────────
-isolated function elapsedSeconds(int startTime) returns decimal =>
-    <decimal>(time:utcNow()[0] - startTime);
-
-// ── Core orchestration ────────────────────────────────────────────────────
-// Mirrors getRelationshipAssetAllocationResponse from account-data-api utils.bal:
-//   - Single DB call
+// ── resolvePortfolioAllocation ────────────────────────────────────────────
+// Mirrors getRelationshipAssetAllocationResponse from customer new account-data-api:
+//   - Single sequential DB call (no 'start' keyword)
 //   - Light in-memory aggregation
-//   - Debug logging at each step
+//   - Additional INFO logs for DB timing — useful for analysis with INFO level only
 isolated function resolvePortfolioAllocation(
         string correlationId, string portfolioId, boolean includeNegativeValues)
         returns PortfolioAllocationResult|error {
     do {
-        // DB query start — nanosecond precision
+        // DB call start — logged at INFO so visible without DEBUG level
         time:Utc dbStart = time:utcNow();
         log:printInfo("DB query starting",
             correlationId = correlationId,
-            portfolioId = portfolioId,
-            timestampNs = dbStart[1]);
+            portfolioId = portfolioId);
 
         data:PortfolioAllocationRow[] rows = check data:fetchPortfolioAllocation(
             correlationId, portfolioId, includeNegativeValues);
 
-        // DB query end — nanosecond precision
+        // DB call end — logs actual DB execution time in milliseconds
         time:Utc dbEnd = time:utcNow();
         decimal dbElapsedMs = time:utcDiffSeconds(dbEnd, dbStart) * 1000d;
         log:printInfo("DB query completed",
@@ -62,10 +55,9 @@ isolated function resolvePortfolioAllocation(
             rowCount = rows.length(),
             dbElapsedMs = dbElapsedMs);
 
-        // Aggregation start
-        time:Utc aggStart = time:utcNow();
+        // In-memory aggregation
         AllocationSegment[] segments = [];
-        decimal totalValue   = 0d;
+        decimal totalValue    = 0d;
         decimal negativeValue = 0d;
 
         foreach data:PortfolioAllocationRow row in rows {
@@ -88,20 +80,11 @@ isolated function resolvePortfolioAllocation(
             segments.push(segment);
         }
 
-        PortfolioAllocationResult result = {
+        return {
             portfolioId:  portfolioId,
             totalValue:   totalValue + negativeValue,
             segments:     segments
         };
-
-        // Aggregation end
-        time:Utc aggEnd = time:utcNow();
-        decimal aggElapsedMs = time:utcDiffSeconds(aggEnd, aggStart) * 1000d;
-        log:printInfo("Response constructed",
-            correlationId = correlationId,
-            aggElapsedMs = aggElapsedMs);
-
-        return result;
 
     } on fail error err {
         return error(string `Internal error. CorrelationId: ${correlationId}, ` +
