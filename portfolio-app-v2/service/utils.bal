@@ -44,21 +44,26 @@ isolated function resolvePortfolioAllocation(
         string correlationId, string portfolioId, boolean includeNegativeValues)
         returns PortfolioAllocationResult|error {
     do {
-        log:printDebug("[DEBUG] resolvePortfolioAllocation starting",
+        // DB query start — nanosecond precision
+        time:Utc dbStart = time:utcNow();
+        log:printInfo("DB query starting",
             correlationId = correlationId,
             portfolioId = portfolioId,
-            includeNegativeValues = includeNegativeValues);
-
-        int startTime = time:utcNow()[0];
+            timestampNs = dbStart[1]);
 
         data:PortfolioAllocationRow[] rows = check data:fetchPortfolioAllocation(
             correlationId, portfolioId, includeNegativeValues);
 
-        log:printDebug("[DEBUG] resolvePortfolioAllocation - DB call completed",
+        // DB query end — nanosecond precision
+        time:Utc dbEnd = time:utcNow();
+        decimal dbElapsedMs = time:utcDiffSeconds(dbEnd, dbStart) * 1000d;
+        log:printInfo("DB query completed",
             correlationId = correlationId,
-            elapsedSeconds = elapsedSeconds(startTime));
+            rowCount = rows.length(),
+            dbElapsedMs = dbElapsedMs);
 
-        startTime = time:utcNow()[0];
+        // Aggregation start
+        time:Utc aggStart = time:utcNow();
         AllocationSegment[] segments = [];
         decimal totalValue   = 0d;
         decimal negativeValue = 0d;
@@ -89,9 +94,12 @@ isolated function resolvePortfolioAllocation(
             segments:     segments
         };
 
-        log:printDebug("[DEBUG] resolvePortfolioAllocation - response constructed",
+        // Aggregation end
+        time:Utc aggEnd = time:utcNow();
+        decimal aggElapsedMs = time:utcDiffSeconds(aggEnd, aggStart) * 1000d;
+        log:printInfo("Response constructed",
             correlationId = correlationId,
-            elapsedSeconds = elapsedSeconds(startTime));
+            aggElapsedMs = aggElapsedMs);
 
         return result;
 
