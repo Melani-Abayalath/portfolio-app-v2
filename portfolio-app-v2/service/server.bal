@@ -120,20 +120,23 @@ isolated service /graphql on new graphql:Listener(httpListener) {
             PortfolioAllocationInput input) returns PortfolioAllocationResult|error {
         LoggingContext context = check constructLoggingContext(ctx);
         do {
-            int startTime = time:utcNow()[0];
-            log:printDebug("[DEBUG] Starting portfolioAllocationSummary",
+            // Nanosecond precision — matches customer log analysis methodology
+            time:Utc resolverStart = time:utcNow();
+            log:printInfo("Starting portfolioAllocationSummary",
                 correlationId = context.correlationId,
                 portfolioId = input.portfolioId,
-                includeNegativeValues = input.includeNegativeValues);
+                timestampNs = resolverStart[1]);
 
             boolean includeNeg = input.includeNegativeValues ?: false;
 
             PortfolioAllocationResult result = check resolvePortfolioAllocation(
                 context.correlationId, input.portfolioId, includeNeg);
 
-            log:printDebug("[DEBUG] portfolioAllocationSummary completed",
+            time:Utc resolverEnd = time:utcNow();
+            decimal elapsedMs = time:utcDiffSeconds(resolverEnd, resolverStart) * 1000d;
+            log:printInfo("portfolioAllocationSummary completed",
                 correlationId = context.correlationId,
-                elapsedSeconds = elapsedSeconds(startTime));
+                elapsedMs = elapsedMs);
             return result;
         } on fail error err {
             log:printError("Error in portfolioAllocationSummary", err,
@@ -142,3 +145,4 @@ isolated service /graphql on new graphql:Listener(httpListener) {
         }
     }
 }
+
