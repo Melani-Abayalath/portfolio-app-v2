@@ -15,14 +15,23 @@ public readonly isolated service class LogInterceptor {
         LoggingContext ctx = check constructLoggingContext(context);
 
         string fieldName = 'field.getName();
-        time:Utc startTime = time:utcNow();
+
+        // Log when interceptor hands off to resolver — nanosecond precision
+        // This is the equivalent of the customer's "userId is set to impersonatedUser"
+        // timestamp — marks when initContext is complete and execution is about to begin
+        time:Utc interceptorStart = time:utcNow();
+        log:printInfo(string `Interceptor handoff: ${fieldName}`,
+            correlationId = ctx.correlationId,
+            timestampNs = interceptorStart[1]);
 
         var data = context.resolve('field);
 
-        time:Utc endTime = time:utcNow();
-        time:Seconds diff = time:utcDiffSeconds(endTime, startTime);
+        time:Utc interceptorEnd = time:utcNow();
+        time:Seconds diff = time:utcDiffSeconds(interceptorEnd, interceptorStart);
+        decimal elapsedMs = diff * 1000d;
         log:printInfo(string `Executed ${fieldName}`,
             elapsedTime = diff,
+            elapsedMs = elapsedMs,
             correlationId = ctx.correlationId);
         return data;
     }
