@@ -3,46 +3,32 @@ import ballerina/http;
 import ballerina/log;
 import ballerina/time;
 
-configurable int port                    = 9090;
+configurable int port                       = 9090;
 configurable decimal graphqlListenerTimeout = 180;
-configurable boolean enableGraphiql      = false;
-
-// Matches configurable boolean allowImpersonation = true in new account-data-api server.bal
-configurable boolean allowImpersonation = true;
+configurable boolean enableGraphiql         = false;
+configurable boolean allowImpersonation     = true;
 
 listener http:Listener httpListener = check new (port, timeout = graphqlListenerTimeout);
 
-// ── Mocked jwtProcessor:getUserId ──────────────────────────────────────────
+// ── Mocked jwtProcessor:getUserId ─────────────────────────────────────────
 // The new account-data-api imports bgic/bt.commons.jwt.processor as jwtProcessor
 // and calls jwtProcessor:getUserId(xJwtAssertion).
-// That internal package is not available here.
-// This mock replicates the structural behaviour:
-//   - receives the JWT header string
-//   - attempts to extract a user identifier
-//   - returns empty string if the header is not a valid JWT or user is not found
-// Based on confirmed evidence: this call completed in 0.826ms during the load test.
-// It is mocked here to preserve the structural flow without the internal dependency.
+// That internal package is not available here. This mock replicates the structural
+// behaviour. Confirmed from nanosecond log analysis: the real call completed in 0.826ms.
 isolated function mockGetUserId(string jwtAssertion) returns string {
-    // A standard JWT has three dot-separated base64url segments: header.payload.signature
-    // We attempt to find the payload and return a dummy userId to mimic the call pattern.
-    // In the real implementation getUserId would decode the JWT and extract a claim.
     string[] parts = re `\.`.split(jwtAssertion);
     if parts.length() == 3 {
-        // Valid JWT structure detected — return a placeholder userId
-        // In production this would be the decoded claim value
         return "MOCK_USER";
     }
-    // Not a valid JWT — return empty string (same behaviour as real implementation
-    // when userId is not found, which triggers the "userId is empty" log)
     return "";
 }
 
 // ── initContext ────────────────────────────────────────────────────────────
-// Mirrors new account-data-api server.bal initContext exactly:
-//   1. Extract correlation ID and request ID from headers
-//   2. Process JWT assertion header → extract userId (mocked)
-//   3. Apply impersonation header if allowImpersonation is true
-//   4. Set all values into graphql:Context
+// Mirrors new account-data-api server.bal initContext exactly.
+// The final log:printInfo "initContext completed" is the equivalent of the
+// customer's logger:printDebug "userId is set to impersonatedUser" log —
+// it marks TIMESTAMP A: the moment initContext finishes.
+// GAP = "initContext completed" → "Starting portfolioAllocationSummary"
 isolated function initContext(http:RequestContext requestContext, http:Request request)
         returns graphql:Context|error {
     graphql:Context context = new;
@@ -57,40 +43,36 @@ isolated function initContext(http:RequestContext requestContext, http:Request r
 
     string userId = "";
 
-    // ── JWT processing (mocked jwtProcessor:getUserId) ─────────────────────
-    // In new account-data-api: userId = jwtProcessor:getUserId(xJwtAssertion)
-    // Confirmed from nanosecond log analysis: this block completes in 0.826ms
     if xJwtAssertion is string {
         userId = mockGetUserId(xJwtAssertion);
-
         if userId == "" {
             log:printDebug("From JWT assertion, userId is empty.",
-                correlationId = correlationId,
-                metadata = {"userId": userId});
+                correlationId = correlationId);
         } else {
             log:printDebug("userId is set from JWT assertion",
-                correlationId = correlationId,
-                metadata = {"userId": userId});
+                correlationId = correlationId);
         }
     }
 
-    // ── Impersonation (mirrors new account-data-api server.bal lines 40-46) ─
     if allowImpersonation && impersonatedUser is string {
         if impersonatedUser == "" {
             log:printDebug("ImpersonatedUser is empty.",
-                correlationId = correlationId,
-                metadata = {"userId": userId});
+                correlationId = correlationId);
         }
         userId = impersonatedUser;
         log:printDebug("userId is set to impersonatedUser",
-            correlationId = correlationId,
-            metadata = {"userId": userId});
+            correlationId = correlationId);
     }
 
     context.set(CORRELATION_ID, correlationId);
     context.set(REQUEST_ID, xRequestId);
     context.set(CLIENT, 'client);
     context.set(X_USERID, userId.toUpperAscii());
+
+    // TIMESTAMP A — equivalent of customer's "userId is set to impersonatedUser" log
+    // Last log in initContext — marks when initContext fully completes.
+    // GAP between this and "Starting portfolioAllocationSummary" = scheduler queue wait.
+    log:printInfo("initContext completed", correlationId = correlationId);
     return context;
 }
 
@@ -104,39 +86,37 @@ isolated function initContext(http:RequestContext requestContext, http:Request r
 }
 isolated service /graphql on new graphql:Listener(httpListener) {
 
-    // ── Health check ───────────────────────────────────────────────────────
     resource function get healthz(graphql:Context ctx) returns string {
         return "OK";
     }
 
     // ── portfolioAllocationSummary ─────────────────────────────────────────
-    // Mirrors the structure of relationshipAssetAllocation from new account-data-api:
-    //   - Single sequential DB call (no 'start' keyword)
-    //   - constructLoggingContext at the top
-    //   - Debug log at start and end with elapsed time
-    //   - Error handling pattern identical to new code
+    // Mirrors relationshipAssetAllocation from customer new account-data-api exactly:
+    //   - int startTime = time:utcNow()[0]  (same as customer)
+    //   - printInfo "Starting..." at top    (TIMESTAMP B)
+    //   - single DB call, no 'start' keyword
+    //   - printInfo "completed" at end      (TIMESTAMP C)
     isolated resource function get portfolioAllocationSummary(
             graphql:Context ctx,
             PortfolioAllocationInput input) returns PortfolioAllocationResult|error {
         LoggingContext context = check constructLoggingContext(ctx);
         do {
-            // Nanosecond precision — matches customer log analysis methodology
-            time:Utc resolverStart = time:utcNow();
-            log:printInfo("Starting portfolioAllocationSummary",
+            int startTime = time:utcNow()[0];
+
+            // TIMESTAMP B — equivalent of "[DEBUG] Starting relationshipAssetAllocation"
+            log:printInfo("[INFO] Starting portfolioAllocationSummary",
                 correlationId = context.correlationId,
-                portfolioId = input.portfolioId,
-                timestampNs = resolverStart[1]);
+                portfolioId = input.portfolioId);
 
             boolean includeNeg = input.includeNegativeValues ?: false;
 
             PortfolioAllocationResult result = check resolvePortfolioAllocation(
                 context.correlationId, input.portfolioId, includeNeg);
 
-            time:Utc resolverEnd = time:utcNow();
-            decimal elapsedMs = time:utcDiffSeconds(resolverEnd, resolverStart) * 1000d;
-            log:printInfo("portfolioAllocationSummary completed",
+            // TIMESTAMP C — equivalent of "[DEBUG] relationshipAssetAllocation completed"
+            log:printInfo("[INFO] portfolioAllocationSummary completed",
                 correlationId = context.correlationId,
-                elapsedMs = elapsedMs);
+                elapsedTime = <decimal>(time:utcNow()[0] - startTime));
             return result;
         } on fail error err {
             log:printError("Error in portfolioAllocationSummary", err,
@@ -145,4 +125,5 @@ isolated service /graphql on new graphql:Listener(httpListener) {
         }
     }
 }
+
 
